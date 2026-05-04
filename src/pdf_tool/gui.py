@@ -12,13 +12,13 @@ if getattr(sys, 'frozen', False) and sys.platform == 'win32':
         _original_popen_init(self, *args, **kwargs)
     subprocess.Popen.__init__ = _popen_init
 
-from PySide6.QtCore import Qt, QThread, Signal, QSettings
+from PySide6.QtCore import Qt, QThread, Signal, QSettings, QEvent
 from PySide6.QtGui import QPixmap, QImage, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup,
     QSpinBox, QDoubleSpinBox, QProgressBar, QListWidget, QFileDialog,
-    QMessageBox, QScrollArea, QGridLayout, QCheckBox, QSplitter, QStatusBar,
+    QMessageBox, QScrollArea, QGridLayout, QCheckBox, QSplitter, QStatusBar, QDialog,
 )
 
 from pdf2image import convert_from_path
@@ -101,10 +101,156 @@ class ThumbnailWorker(QThread):
         self.done.emit()
 
 
+# ── Page preview dialog ────────────────────────────────────────────
+
+class PagePreviewDialog(QDialog):
+    def __init__(self, pdf_path, page_index, total_pages, parent=None):
+        super().__init__(parent)
+        self._pdf_path = pdf_path
+        self._current = page_index
+        self._total = total_pages
+        self._zoom = 1.0
+        self._original_pixmap = None
+        self.setWindowTitle(f"第 {page_index + 1} / {total_pages} 页 - 页面预览")
+        self.resize(800, 1000)
+        layout = QVBoxLayout(self)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setAlignment(Qt.AlignCenter)
+        self._img_label = QLabel()
+        self._img_label.setAlignment(Qt.AlignCenter)
+        self._scroll.setWidget(self._img_label)
+        self._scroll.viewport().installEventFilter(self)
+        self._drag_start = None
+        self._drag_bar_pos = None
+        layout.addWidget(self._scroll, stretch=1)
+
+        nav = QHBoxLayout()
+        self._btn_prev = QPushButton("上一页")
+        self._btn_prev.clicked.connect(self._prev_page)
+        nav.addWidget(self._btn_prev)
+        self._page_label = QLabel()
+        self._page_label.setAlignment(Qt.AlignCenter)
+        nav.addWidget(self._page_label, stretch=1)
+        self._btn_next = QPushButton("下一页")
+        self._btn_next.clicked.connect(self._next_page)
+        nav.addWidget(self._btn_next)
+        layout.addLayout(nav)
+
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.close)
+        layout.addWidget(btn_close)
+
+        self._render_page(page_index)
+
+    def _render_page(self, page_index):
+        self._current = page_index
+        self._page_label.setText(
+            f"第 {page_index + 1} / {self._total} 页  ({int(self._zoom * 100)}%)")
+        self._btn_prev.setEnabled(page_index > 0)
+        self._btn_next.setEnabled(page_index < self._total - 1)
+        self._img_label.setText("正在渲染...")
+
+        kwargs = dict(dpi=200, first_page=page_index + 1, last_page=page_index + 1)
+        if POPPLER_PATH:
+            kwargs["poppler_path"] = POPPLER_PATH
+        try:
+            images = convert_from_path(self._pdf_path, **kwargs)
+            if images:
+                pil_img = images[0].convert("RGB")
+                data = pil_img.tobytes("raw", "RGB")
+                qimg = QImage(data, pil_img.size[0], pil_img.size[1],
+                              pil_img.size[0] * 3, QImage.Format_RGB888).copy()
+                self._img_label.setPixmap(QPixmap.fromImage(qimg))
+                self._original_pixmap = QPixmap.fromImage(qimg)
+                if self._zoom != 1.0:
+                    new_w = int(self._original_pixmap.width() * self._zoom)
+                    new_h = int(self._original_pixmap.height() * self._zoom)
+                    self._img_label.setPixmap(self._original_pixmap.scaled(
+                        new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self._scroll.verticalScrollBar().setValue(0)
+            else:
+                self._img_label.setText("无法渲染此页面。")
+        except Exception:
+            self._img_label.setText("渲染失败。")
+
+    def _prev_page(self):
+        if self._current > 0:
+            self._render_page(self._current - 1)
+
+    def _next_page(self):
+        if self._current < self._total - 1:
+            self._render_page(self._current + 1)
+
+    def eventFilter(self, obj, event):
+        if obj is self._scroll.viewport():
+            if event.type() == QEvent.Type.Wheel:
+                if event.modifiers() & Qt.ControlModifier:
+                    delta = event.angleDelta().y()
+                    factor = 1.15 if delta > 0 else 1 / 1.15
+                    new_zoom = max(0.25, min(5.0, self._zoom * factor))
+                    if new_zoom != self._zoom:
+                        mouse_pos = event.position().toPoint()
+                        self._apply_zoom(new_zoom, mouse_pos)
+                    return True
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.LeftButton:
+                    self._drag_start = event.position().toPoint()
+                    self._drag_bar_pos = (
+                        self._scroll.horizontalScrollBar().value(),
+                        self._scroll.verticalScrollBar().value(),
+                    )
+                    self._scroll.viewport().setCursor(Qt.ClosedHandCursor)
+            elif event.type() == QEvent.Type.MouseMove:
+                if self._drag_start is not None:
+                    delta = event.position().toPoint() - self._drag_start
+                    self._scroll.horizontalScrollBar().setValue(
+                        self._drag_bar_pos[0] - delta.x())
+                    self._scroll.verticalScrollBar().setValue(
+                        self._drag_bar_pos[1] - delta.y())
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.LeftButton and self._drag_start is not None:
+                    self._drag_start = None
+                    self._drag_bar_pos = None
+                    self._scroll.viewport().setCursor(Qt.ArrowCursor)
+        return super().eventFilter(obj, event)
+
+    def _apply_zoom(self, new_zoom, mouse_pos=None):
+        if self._original_pixmap is None:
+            return
+        old_zoom = self._zoom
+        self._zoom = new_zoom
+        new_w = int(self._original_pixmap.width() * self._zoom)
+        new_h = int(self._original_pixmap.height() * self._zoom)
+        scaled = self._original_pixmap.scaled(
+            new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._img_label.setPixmap(scaled)
+        if mouse_pos is not None:
+            h_bar = self._scroll.horizontalScrollBar()
+            v_bar = self._scroll.verticalScrollBar()
+            ratio = new_zoom / old_zoom
+            new_x = (h_bar.value() + mouse_pos.x()) * ratio - mouse_pos.x()
+            new_y = (v_bar.value() + mouse_pos.y()) * ratio - mouse_pos.y()
+            h_bar.setValue(int(new_x))
+            v_bar.setValue(int(new_y))
+        self._page_label.setText(
+            f"第 {self._current + 1} / {self._total} 页  ({int(self._zoom * 100)}%)")
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Left:
+            self._prev_page()
+        elif event.key() == Qt.Key_Right:
+            self._next_page()
+        else:
+            super().keyPressEvent(event)
+
+
 # ── Page thumbnail widget ─────────────────────────────────────────
 
 class PageThumb(QWidget):
     toggled = Signal(int, bool)
+    doubleClicked = Signal(int)
 
     def __init__(self, page_index, pixmap, parent=None):
         super().__init__(parent)
@@ -138,6 +284,11 @@ class PageThumb(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.cb.toggle()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.cb.toggle()
+            self.doubleClicked.emit(self.page_index)
 
     def _update_style(self):
         if self._selected:
@@ -352,10 +503,17 @@ class SplitWidget(QWidget):
             return
         pixmap = QPixmap.fromImage(qimage)
         thumb = PageThumb(index, pixmap)
+        thumb.doubleClicked.connect(self._preview_page)
         cols = 4
         row, col = divmod(index, cols)
         self.preview_grid.addWidget(thumb, row, col)
         self._page_widgets.append(thumb)
+
+    def _preview_page(self, page_index):
+        if self._current_pdf:
+            total = len(self._page_widgets)
+            dlg = PagePreviewDialog(self._current_pdf, page_index, total, self)
+            dlg.exec()
 
     # -- Mode toggle --
 
