@@ -1,3 +1,6 @@
 .DS_Store
 test/
 output/
+.venv/
+dist/
+poppler/poppler_bin/

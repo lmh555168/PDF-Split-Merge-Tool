@@ -1,142 +1,113 @@
 # PDF Split and Merge Tool
 
-This is a PDF splitting and merging tool written in Python using the `pikepdf` library. It supports splitting PDF files by specified page count or file size, and can also merge multiple PDF files into one. The tool is configurable via command-line arguments and is suitable for situations where you need to split large files into smaller ones or merge multiple files into one.
+A PDF splitting and merging tool written in Python, featuring a CLI and a PySide6 GUI with page preview and thumbnail selection.
 
 ## Features
 
-1. **Split by Page Count**: Splits a PDF file into multiple smaller files, each containing a specified number of pages.
-2. **Split by File Size**: Splits a PDF file by the specified maximum file size (in MB), ensuring that each file does not exceed the specified size limit. Binary search is used to optimize performance and minimize unnecessary temporary file creation.
-3. **Merge PDF Files**: Merges multiple PDF files into one. You can specify the output file name; if not specified, the output file name will default to the first input PDF file’s name with a `_merge` suffix.
+- **Split by Page Count** — Divide a PDF into smaller files with a fixed number of pages each.
+- **Split by File Size** — Divide a PDF by maximum file size (MB), using binary search optimization.
+- **Split by Selected Pages** — Preview all pages as thumbnails, select specific pages, and extract them into a new PDF.
+- **Merge PDFs** — Combine multiple PDF files into one, with drag-and-drop reordering.
+- **PDF Page Preview** — Visual thumbnail preview of every page before processing.
+- **Cross-platform** — Works on Windows, macOS, and Linux.
 
-## Install Dependencies
+## Installation
 
-Make sure you have installed `pikepdf`, a powerful Python library for working with PDFs. You can install it using the following command:
+### Prerequisites
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+### Quick Start
 
 ```bash
-pip install pikepdf
+# Clone the repository
+git clone https://github.com/lmh555168/PDF-Split-Merge-Tool.git
+cd PDF-Split-Merge-Tool
+
+# Install dependencies (Poppler is bundled for Windows)
+uv sync
 ```
 
 ## Usage
 
-### Basic Command
+### GUI
 
 ```bash
-python pdf_splitter.py <input_pdf_file_paths> [-m] [-s <max_size_in_MB> | -p <pages_per_file>] [-o <output_directory>] [-f <merged_output_filename>]
+uv run pdf-tool-gui
 ```
 
-### Arguments
-
-- `input_pdfs`: Input PDF file paths (one file for splitting, multiple files for merging).
-- `-m`, `--merge`: Enable merge mode to merge multiple PDF files into one.
-- `-s`, `--size`: Maximum file size (in MB) for splitting by size. Supports decimal values.
-- `-p`, `--pages`: Number of pages per split file when splitting by page count.
-- `-o`, `--output`: Output directory. By default, the output will be saved in the directory of the input PDF file. If specified, the file will be saved to that directory.
-- `-f`, `--filename`: The output filename for the merged PDF. If not specified, the output will default to the first input PDF's name with a `_merge` suffix.
-
-### Examples
-
-#### Split PDF File
-
-1. **Split by Size**: Split a PDF into files no larger than 20 MB each.
-
-    ```bash
-    python pdf_splitter.py input.pdf -s 20 -o output_directory
-    ```
-
-2. **Split by Page Count**: Split a PDF so that each file contains 10 pages.
-
-    ```bash
-    python pdf_splitter.py input.pdf -p 10 -o output_directory
-    ```
-
-3. **Custom Output Directory**: Specify a custom output directory.
-
-    ```bash
-    python pdf_splitter.py input.pdf -s 10 -o custom_output_directory
-    ```
-
-#### Merge PDF Files
-
-1. **Merge Multiple PDF Files**: Merge `file1.pdf`, `file2.pdf`, and `file3.pdf` into a single file called `merged_output.pdf`.
-
-    ```bash
-    python pdf_splitter.py file1.pdf file2.pdf file3.pdf -m -o output_directory -f merged_output.pdf
-    ```
-
-2. **Merge Multiple PDF Files**: Merge `file1.pdf`, `file2.pdf`, and `file3.pdf`, and the output file will be named `file1_merge.pdf` by default.
-
-    ```bash
-    python pdf_splitter.py file1.pdf file2.pdf file3.pdf -m -o output_directory
-    ```
-
-
-# PDF 分割与合并工具
-
-这是一个使用 `pikepdf` 库编写的 PDF 分割与合并工具，支持根据指定的页数或文件大小对 PDF 文件进行分割，并且可以合并多个 PDF 文件为一个。工具通过命令行参数灵活配置，适用于需要将大文件拆分为多个较小文件，或将多个文件合并成一个文件的场景。
-
-## 功能特性
-
-1. **按页数分割**：根据指定的页数，将 PDF 文件分割成多个小文件，每个文件包含指定数量的页面。
-2. **按文件大小分割**：根据指定的最大文件大小（以 MB 为单位），分割 PDF 文件。分割时确保每个文件的大小不超过指定的最大值，使用二分查找优化性能，减少不必要的临时文件生成。
-3. **合并 PDF 文件**：将多个 PDF 文件合并为一个文件。用户可以指定输出文件名，如果未指定，则默认使用第一个 PDF 文件的名称加上 `_merge` 后缀。
-
-## 安装依赖
-
-确保你已经安装了 `pikepdf`。你可以通过以下命令安装：
+Or:
 
 ```bash
-pip install pikepdf
+uv run python -m pdf_tool.gui
 ```
 
-## 使用方法
+The GUI provides two tabs:
 
-### 基本命令
+1. **Split PDF** — Load a PDF, preview page thumbnails, choose a split method (by pages, by size, or by selected pages), and execute.
+2. **Merge PDF** — Add multiple PDF files, reorder with up/down buttons, preview selected files, and merge.
+
+### CLI
 
 ```bash
-python pdf_splitter.py <输入PDF文件路径> [-m] [-s <最大文件大小(MB)> | -p <每个文件的页数>] [-o <输出目录>] [-f <合并输出文件名>]
+uv run pdf-tool <input_pdfs> [options]
 ```
 
-### 参数说明
+#### Arguments
 
-- `input_pdfs`：输入的 PDF 文件路径（分割时为一个文件，合并时为多个文件）。
-- `-m`, `--merge`：启用合并模式，合并多个 PDF 文件为一个。
-- `-s`, `--size`：按大小分割的最大文件大小（MB），支持小数。
-- `-p`, `--pages`：按页数分割的每个文件的页数。
-- `-o`, `--output`：输出目录，默认为输入 PDF 所在的目录。如果指定，文件将被保存到该目录。
-- `-f`, `--filename`：合并输出的文件名。如果未指定，默认使用第一个输入文件的名称加上 `_merge` 后缀。
+| Argument | Description |
+|----------|-------------|
+| `input_pdfs` | Input PDF file path(s). One file for splitting, multiple files for merging. |
+| `-m`, `--merge` | Enable merge mode |
+| `-s`, `--size` | Split by maximum file size (MB) |
+| `-p`, `--pages` | Split by number of pages per file |
+| `-o`, `--output` | Output directory (default: `{filename}_output/` next to source PDF) |
+| `-f`, `--filename` | Output filename for merge (default: `{first_input}_merge.pdf`) |
 
-### 示例
+#### Examples
 
-#### 分割 PDF 文件
+```bash
+# Split by page count (10 pages per file)
+uv run pdf-tool input.pdf -p 10
 
-1. **按大小分割 PDF 文件**：每个文件最大为 20MB。
+# Split by file size (max 20 MB each)
+uv run pdf-tool input.pdf -s 20
 
-    ```bash
-    python pdf_splitter.py input.pdf -s 20 -o output_directory
-    ```
+# Split with custom output directory
+uv run pdf-tool input.pdf -p 5 -o ./output
 
-2. **按页数分割 PDF 文件**：每个文件包含 10 页。
+# Merge multiple PDFs
+uv run pdf-tool file1.pdf file2.pdf file3.pdf -m
 
-    ```bash
-    python pdf_splitter.py input.pdf -p 10 -o output_directory
-    ```
+# Merge with custom output filename
+uv run pdf-tool file1.pdf file2.pdf -m -f merged_report.pdf
 
-3. **自定义输出目录**：
+# Merge with custom output directory
+uv run pdf-tool file1.pdf file2.pdf -m -o ./merged_output
+```
 
-    ```bash
-    python pdf_splitter.py input.pdf -s 10 -o custom_output_directory
-    ```
+## Project Structure
 
-#### 合并 PDF 文件
+```
+PDF-Split-Merge-Tool/
+├── src/pdf_tool/
+│   ├── __init__.py    # Package exports
+│   ├── core.py        # Core PDF logic (pikepdf)
+│   ├── cli.py         # CLI entry point
+│   └── gui.py         # PySide6 GUI
+├── poppler/           # Bundled Poppler binaries (Windows)
+├── pyproject.toml     # Project configuration
+└── README.md
+```
 
-1. **合并多个 PDF 文件**：合并 `file1.pdf`、`file2.pdf` 和 `file3.pdf`，并输出为 `merged_output.pdf`。
+## Tech Stack
 
-    ```bash
-    python pdf_splitter.py file1.pdf file2.pdf file3.pdf -m -o output_directory -f merged_output.pdf
-    ```
+- **[pikepdf](https://github.com/pikepdf/pikepdf)** — PDF manipulation
+- **[PySide6](https://doc.qt.io/qtforpython-6/)** — GUI framework (Qt for Python)
+- **[pdf2image](https://github.com/Belval/pdf2image)** — PDF page rendering (Poppler wrapper)
+- **[Poppler](https://poppler.freedesktop.org/)** — PDF rendering engine (bundled for Windows)
 
-2. **合并多个 PDF 文件**：合并 `file1.pdf`、`file2.pdf` 和 `file3.pdf`，输出文件名为默认的 `file1_merge.pdf`。
+## License
 
-    ```bash
-    python pdf_splitter.py file1.pdf file2.pdf file3.pdf -m -o output_directory
-    ```
+MIT
