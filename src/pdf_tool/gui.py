@@ -1,8 +1,19 @@
+import json
 import os
+import sys
+import subprocess
 import glob
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QPixmap, QImage
+if getattr(sys, 'frozen', False) and sys.platform == 'win32':
+    _original_popen_init = subprocess.Popen.__init__
+    def _popen_init(self, *args, **kwargs):
+        kwargs.setdefault('creationflags', 0)
+        kwargs['creationflags'] |= subprocess.CREATE_NO_WINDOW
+        _original_popen_init(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _popen_init
+
+from PySide6.QtCore import Qt, QThread, Signal, QSettings
+from PySide6.QtGui import QPixmap, QImage, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup,
@@ -25,6 +36,11 @@ THUMB_W, THUMB_H = 160, 220
 
 
 def _find_poppler_path():
+    if getattr(sys, 'frozen', False):
+        base = sys._MEIPASS
+        poppler_dir = os.path.join(base, 'poppler')
+        if os.path.isdir(poppler_dir):
+            return poppler_dir
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     pattern = os.path.join(project_root, "poppler", "poppler_bin", "*", "Library", "bin")
     matches = glob.glob(pattern)
@@ -139,20 +155,20 @@ class PageThumb(QWidget):
 
 # ── Shared helpers ────────────────────────────────────────────────
 
-def _pick_pdf_file(parent):
+def _pick_pdf_file(parent, start_dir=""):
     path, _ = QFileDialog.getOpenFileName(
-        parent, "选择PDF文件", "", "PDF Files (*.pdf)")
+        parent, "选择PDF文件", start_dir, "PDF Files (*.pdf)")
     return path
 
 
-def _pick_pdf_files(parent):
+def _pick_pdf_files(parent, start_dir=""):
     paths, _ = QFileDialog.getOpenFileNames(
-        parent, "选择PDF文件", "", "PDF Files (*.pdf)")
+        parent, "选择PDF文件", start_dir, "PDF Files (*.pdf)")
     return paths
 
 
-def _pick_directory(parent):
-    return QFileDialog.getExistingDirectory(parent, "选择输出目录")
+def _pick_directory(parent, start_dir=""):
+    return QFileDialog.getExistingDirectory(parent, "选择输出目录", start_dir)
 
 
 # ── Split tab ─────────────────────────────────────────────────────
@@ -165,6 +181,7 @@ class SplitWidget(QWidget):
         self._thumb_version = 0
         self._current_pdf = ""
         self._page_widgets = []
+        self._settings = None
         self._init_ui()
 
     def _init_ui(self):
@@ -289,16 +306,27 @@ class SplitWidget(QWidget):
     # -- Browse --
 
     def _browse_input(self):
-        path = _pick_pdf_file(self)
+        start = self._last_input_dir()
+        path = _pick_pdf_file(self, start)
         if path:
             self.input_edit.setText(path)
             self.output_edit.setText(default_output_dir(path))
             self._load_pdf(path)
 
     def _browse_dir(self, edit):
-        d = _pick_directory(self)
+        start = edit.text().strip()
+        if not start or not os.path.isdir(start):
+            start = self._last_input_dir()
+        d = _pick_directory(self, start)
         if d:
             edit.setText(d)
+
+    def _last_input_dir(self):
+        if self._settings:
+            pdf = self._settings.value("split/input_pdf", "")
+            if pdf and os.path.exists(pdf):
+                return os.path.dirname(pdf)
+        return ""
 
     # -- Thumbnail loading --
 
@@ -413,6 +441,7 @@ class MergeWidget(QWidget):
         self._worker = None
         self._thumb_worker = None
         self._thumb_version = 0
+        self._settings = None
         self._init_ui()
 
     def _init_ui(self):
@@ -475,7 +504,8 @@ class MergeWidget(QWidget):
         layout.addLayout(act)
 
     def _add_files(self):
-        paths = _pick_pdf_files(self)
+        start = self._last_input_dir()
+        paths = _pick_pdf_files(self, start)
         existing = {
             self.file_list.item(i).text()
             for i in range(self.file_list.count())
@@ -507,9 +537,24 @@ class MergeWidget(QWidget):
             self.file_list.setCurrentRow(row + 1)
 
     def _browse_dir(self, edit):
-        d = _pick_directory(self)
+        start = edit.text().strip()
+        if not start or not os.path.isdir(start):
+            start = self._last_input_dir()
+        d = _pick_directory(self, start)
         if d:
             edit.setText(d)
+
+    def _last_input_dir(self):
+        if self._settings:
+            files_json = self._settings.value("merge/files", "[]")
+            try:
+                files = json.loads(files_json)
+                for f in files:
+                    if os.path.exists(f):
+                        return os.path.dirname(f)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return ""
 
     def _preview_selected(self, row):
         if row < 0:
@@ -568,8 +613,6 @@ class MergeWidget(QWidget):
         if ok:
             QMessageBox.information(self, "成功", msg)
             self.file_list.clear()
-            self.filename_edit.clear()
-            self.output_edit.clear()
             self.progress.setValue(0)
             self.status.clear()
             self.preview_label.clear()
@@ -587,16 +630,70 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 700)
         self.resize(1050, 750)
 
+        self._settings = QSettings("pdf_tool.ini", QSettings.IniFormat)
+        if getattr(sys, 'frozen', False):
+            ini_path = os.path.join(os.path.dirname(sys.executable), "pdf_tool.ini")
+            self._settings = QSettings(ini_path, QSettings.IniFormat)
+
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
 
         self.split_widget = SplitWidget()
         self.merge_widget = MergeWidget()
+        self.split_widget._settings = self._settings
+        self.merge_widget._settings = self._settings
 
         tabs.addTab(self.split_widget, "  分割 PDF  ")
         tabs.addTab(self.merge_widget, "  合并 PDF  ")
 
         self.setStatusBar(QStatusBar())
+        self._restore_settings()
+
+    def _save_settings(self):
+        s = self._settings
+        s.setValue("split/input_pdf", self.split_widget.input_edit.text())
+        s.setValue("split/output_dir", self.split_widget.output_edit.text())
+
+        merge_files = [
+            self.merge_widget.file_list.item(i).text()
+            for i in range(self.merge_widget.file_list.count())
+        ]
+        s.setValue("merge/files", json.dumps(merge_files, ensure_ascii=False))
+        s.setValue("merge/output_dir", self.merge_widget.output_edit.text())
+        s.setValue("merge/output_name", self.merge_widget.filename_edit.text())
+
+    def _restore_settings(self):
+        s = self._settings
+
+        split_pdf = s.value("split/input_pdf", "")
+        split_out = s.value("split/output_dir", "")
+        if split_pdf:
+            self.split_widget.input_edit.setText(split_pdf)
+            if split_out:
+                self.split_widget.output_edit.setText(split_out)
+            else:
+                self.split_widget.output_edit.setText(default_output_dir(split_pdf))
+            if os.path.exists(split_pdf):
+                self.split_widget._load_pdf(split_pdf)
+
+        merge_files_json = s.value("merge/files", "[]")
+        try:
+            merge_files = json.loads(merge_files_json)
+            for f in merge_files:
+                if os.path.exists(f):
+                    self.merge_widget.file_list.addItem(f)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        merge_out = s.value("merge/output_dir", "")
+        if merge_out:
+            self.merge_widget.output_edit.setText(merge_out)
+        merge_name = s.value("merge/output_name", "")
+        if merge_name:
+            self.merge_widget.filename_edit.setText(merge_name)
+
+    def closeEvent(self, event: QCloseEvent):
+        self._save_settings()
+        super().closeEvent(event)
 
 
 def main():

@@ -3,4 +3,6 @@ test/
 output/
 .venv/
 dist/
+build/
+*.spec
 poppler/poppler_bin/
