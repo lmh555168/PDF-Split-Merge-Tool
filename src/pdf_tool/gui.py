@@ -10,7 +10,10 @@ if getattr(sys, 'frozen', False) and sys.platform == 'win32':
         kwargs.setdefault('creationflags', 0)
         kwargs['creationflags'] |= subprocess.CREATE_NO_WINDOW
         _original_popen_init(self, *args, **kwargs)
-    subprocess.Popen.__init__ = _popen_init
+    try:
+        subprocess.Popen.__init__ = _popen_init
+    except Exception:
+        pass
 
 from PySide6.QtCore import Qt, QThread, Signal, QSettings, QEvent
 from PySide6.QtGui import QPixmap, QImage, QCloseEvent
@@ -67,12 +70,13 @@ class PdfWorker(QThread):
         try:
             ok, msg = self.func(*self.args, progress_callback=self.progress.emit)
         except Exception as e:
-            ok, msg = False, str(e)
+            ok, msg = False, f"{type(e).__name__}: {e}"
         self.task_finished.emit(ok, msg)
 
 
 class ThumbnailWorker(QThread):
     page_ready = Signal(int, QImage)
+    error = Signal(str)
     done = Signal()
 
     def __init__(self, pdf_path, version, thumb_w=THUMB_W, thumb_h=THUMB_H):
@@ -96,9 +100,37 @@ class ThumbnailWorker(QThread):
                 qimg = QImage(data, img.size[0], img.size[1],
                               img.size[0] * 3, QImage.Format_RGB888).copy()
                 self.page_ready.emit(i, qimg)
-        except Exception:
-            pass
+        except Exception as e:
+            self.error.emit(str(e))
         self.done.emit()
+
+
+class SinglePageRenderWorker(QThread):
+    page_rendered = Signal(QImage)
+    render_failed = Signal(str)
+
+    def __init__(self, pdf_path, page_index, dpi=200):
+        super().__init__()
+        self.pdf_path = pdf_path
+        self.page_index = page_index
+        self.dpi = dpi
+
+    def run(self):
+        kwargs = dict(dpi=self.dpi, first_page=self.page_index + 1, last_page=self.page_index + 1)
+        if POPPLER_PATH:
+            kwargs["poppler_path"] = POPPLER_PATH
+        try:
+            images = convert_from_path(self.pdf_path, **kwargs)
+            if images:
+                pil_img = images[0].convert("RGB")
+                data = pil_img.tobytes("raw", "RGB")
+                qimg = QImage(data, pil_img.size[0], pil_img.size[1],
+                              pil_img.size[0] * 3, QImage.Format_RGB888).copy()
+                self.page_rendered.emit(qimg)
+            else:
+                self.render_failed.emit("无法渲染此页面。")
+        except Exception as e:
+            self.render_failed.emit(str(e))
 
 
 # ── Page preview dialog ────────────────────────────────────────────
@@ -111,6 +143,8 @@ class PagePreviewDialog(QDialog):
         self._total = total_pages
         self._zoom = 1.0
         self._original_pixmap = None
+        self._render_worker = None
+        self._render_version = 0
         self.setWindowTitle(f"第 {page_index + 1} / {total_pages} 页 - 页面预览")
         self.resize(800, 1000)
         layout = QVBoxLayout(self)
@@ -142,46 +176,51 @@ class PagePreviewDialog(QDialog):
         btn_close.clicked.connect(self.close)
         layout.addWidget(btn_close)
 
-        self._render_page(page_index)
+        self._start_render(page_index)
 
-    def _render_page(self, page_index):
+    def _start_render(self, page_index):
         self._current = page_index
-        self._page_label.setText(
-            f"第 {page_index + 1} / {self._total} 页  ({int(self._zoom * 100)}%)")
-        self._btn_prev.setEnabled(page_index > 0)
-        self._btn_next.setEnabled(page_index < self._total - 1)
+        self._update_nav_state()
         self._img_label.setText("正在渲染...")
 
-        kwargs = dict(dpi=200, first_page=page_index + 1, last_page=page_index + 1)
-        if POPPLER_PATH:
-            kwargs["poppler_path"] = POPPLER_PATH
-        try:
-            images = convert_from_path(self._pdf_path, **kwargs)
-            if images:
-                pil_img = images[0].convert("RGB")
-                data = pil_img.tobytes("raw", "RGB")
-                qimg = QImage(data, pil_img.size[0], pil_img.size[1],
-                              pil_img.size[0] * 3, QImage.Format_RGB888).copy()
-                self._img_label.setPixmap(QPixmap.fromImage(qimg))
-                self._original_pixmap = QPixmap.fromImage(qimg)
-                if self._zoom != 1.0:
-                    new_w = int(self._original_pixmap.width() * self._zoom)
-                    new_h = int(self._original_pixmap.height() * self._zoom)
-                    self._img_label.setPixmap(self._original_pixmap.scaled(
-                        new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                self._scroll.verticalScrollBar().setValue(0)
-            else:
-                self._img_label.setText("无法渲染此页面。")
-        except Exception:
-            self._img_label.setText("渲染失败。")
+        if self._render_worker and self._render_worker.isRunning():
+            self._render_worker.requestInterruption()
+            self._render_worker.wait(2000)
+
+        self._render_version += 1
+        version = self._render_version
+        worker = SinglePageRenderWorker(self._pdf_path, page_index)
+        worker.page_rendered.connect(lambda qimg: self._on_rendered(qimg, version))
+        worker.render_failed.connect(lambda msg: self._img_label.setText(msg))
+        worker.start()
+        self._render_worker = worker
+
+    def _on_rendered(self, qimg, version):
+        if version != self._render_version:
+            return
+        self._original_pixmap = QPixmap.fromImage(qimg)
+        if self._zoom != 1.0:
+            new_w = int(self._original_pixmap.width() * self._zoom)
+            new_h = int(self._original_pixmap.height() * self._zoom)
+            self._img_label.setPixmap(self._original_pixmap.scaled(
+                new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self._img_label.setPixmap(self._original_pixmap)
+        self._scroll.verticalScrollBar().setValue(0)
+
+    def _update_nav_state(self):
+        self._page_label.setText(
+            f"第 {self._current + 1} / {self._total} 页  ({int(self._zoom * 100)}%)")
+        self._btn_prev.setEnabled(self._current > 0)
+        self._btn_next.setEnabled(self._current < self._total - 1)
 
     def _prev_page(self):
         if self._current > 0:
-            self._render_page(self._current - 1)
+            self._start_render(self._current - 1)
 
     def _next_page(self):
         if self._current < self._total - 1:
-            self._render_page(self._current + 1)
+            self._start_render(self._current + 1)
 
     def eventFilter(self, obj, event):
         if obj is self._scroll.viewport():
@@ -292,9 +331,9 @@ class PageThumb(QWidget):
 
     def _update_style(self):
         if self._selected:
-            self.setStyleSheet("QFrame{border:2px solid #2196F3; border-radius:4px; background:#E3F2FD;}")
+            self.setStyleSheet("QWidget{border:2px solid #2196F3; border-radius:4px; background:#E3F2FD;}")
         else:
-            self.setStyleSheet("QFrame{border:1px solid #ccc; border-radius:4px; background:#fff;}")
+            self.setStyleSheet("QWidget{border:1px solid #ccc; border-radius:4px; background:#fff;}")
 
     def set_selected(self, selected):
         self.cb.setChecked(selected)
@@ -484,12 +523,17 @@ class SplitWidget(QWidget):
     def _load_pdf(self, path):
         self._clear_thumbnails()
         self._current_pdf = path
+        if self._thumb_worker and self._thumb_worker.isRunning():
+            self._thumb_worker.requestInterruption()
+            self._thumb_worker.wait(2000)
         self._thumb_version += 1
         version = self._thumb_version
         self._thumb_worker = ThumbnailWorker(path, version)
         self._thumb_worker.page_ready.connect(
             lambda i, qimg: self._add_thumb(i, qimg, version)
         )
+        self._thumb_worker.error.connect(
+            lambda msg: self.status.setText(f"缩略图加载失败: {msg}"))
         self._thumb_worker.start()
 
     def _clear_thumbnails(self):
@@ -683,15 +727,15 @@ class MergeWidget(QWidget):
     def _move_up(self):
         row = self.file_list.currentRow()
         if row > 0:
-            text = self.file_list.takeItem(row).text()
-            self.file_list.insertItem(row - 1, text)
+            item = self.file_list.takeItem(row)
+            self.file_list.insertItem(row - 1, item)
             self.file_list.setCurrentRow(row - 1)
 
     def _move_down(self):
         row = self.file_list.currentRow()
         if row < self.file_list.count() - 1:
-            text = self.file_list.takeItem(row).text()
-            self.file_list.insertItem(row + 1, text)
+            item = self.file_list.takeItem(row)
+            self.file_list.insertItem(row + 1, item)
             self.file_list.setCurrentRow(row + 1)
 
     def _browse_dir(self, edit):
@@ -722,6 +766,7 @@ class MergeWidget(QWidget):
             return
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.requestInterruption()
+            self._thumb_worker.wait(2000)
         self._thumb_version += 1
         version = self._thumb_version
         self.preview_label.setText("加载预览...")
@@ -791,7 +836,11 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("pdf_tool.ini", QSettings.IniFormat)
         if getattr(sys, 'frozen', False):
             ini_path = os.path.join(os.path.dirname(sys.executable), "pdf_tool.ini")
-            self._settings = QSettings(ini_path, QSettings.IniFormat)
+        else:
+            config_dir = os.path.join(os.path.expanduser("~"), ".pdf_tool")
+            os.makedirs(config_dir, exist_ok=True)
+            ini_path = os.path.join(config_dir, "pdf_tool.ini")
+        self._settings = QSettings(ini_path, QSettings.IniFormat)
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)

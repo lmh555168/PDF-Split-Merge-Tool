@@ -26,6 +26,13 @@ def main():
 
     args = parser.parse_args()
 
+    if args.pages is not None and args.pages <= 0:
+        print("错误：页数必须为正整数。")
+        sys.exit(1)
+    if args.size is not None and args.size <= 0:
+        print("错误：文件大小必须为正数。")
+        sys.exit(1)
+
     if args.merge:
         if len(args.input_pdfs) < 2:
             print("合并操作需要至少两个PDF文件。")

@@ -26,8 +26,6 @@ def split_pdf_by_pages(input_pdf_path, output_dir, pages_per_split, progress_cal
             )
             new_pdf.save(output_pdf_path)
 
-            file_size = os.path.getsize(output_pdf_path) / (1024 * 1024)
-
             if progress_callback:
                 progress_callback((part_index + 1) / total_parts * 100)
 
@@ -88,7 +86,7 @@ def split_pdf_by_size(input_pdf_path, output_dir, max_size_mb, progress_callback
                 progress_callback(best / total_pages * 100)
 
             split_count += 1
-            current_page = best
+            current_page = max(best, current_page + 1)
 
     msg = "PDF 分割成功。"
     if warnings:
@@ -115,6 +113,10 @@ def merge_pdfs(input_pdf_paths, output_dir, output_file_name=None, progress_call
     if not output_file_name:
         first_base = os.path.splitext(os.path.basename(input_pdf_paths[0]))[0]
         output_file_name = f"{first_base}_merge.pdf"
+    else:
+        output_file_name = os.path.basename(output_file_name)
+        if not output_file_name.lower().endswith('.pdf'):
+            output_file_name += '.pdf'
 
     output_path = os.path.join(output_dir, output_file_name)
     merged_pdf.save(output_path)
